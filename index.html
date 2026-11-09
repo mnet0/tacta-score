@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d0d0f">
+<title>Tacta Score</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+  /* One dark look on purpose: the page borrows the cards' black faces and deck inks.
+     Layout: a single centred column — deck picker, then photo / progress / scores. */
+  :root {
+    color-scheme: dark;
+    --bg: #0d0d0f; --card: #17171b; --card-hover: #1c1c21; --line: #2a2a31;
+    --text: #f4f4f6; --muted: #8b8b96; --dot: #fff; --on-ink: #0d0d0f;
+    --red: #e23b3b; --orange: #f29a1f; --green: #7fb53a; --blue: #5f8fdc; --purple: #8463c9; --pink: #e74c9b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body {
+    font: 500 16px/1.3 ui-rounded, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; justify-content: center;
+    padding-block: 20px 28px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    -webkit-tap-highlight-color: transparent;
+  }
+  main { width: 100%; max-width: 640px; display: flex; flex-direction: column; gap: 18px; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  [hidden] { display: none !important; }
+
+  /* deck picker */
+  .decks { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+  .deck {
+    --c: var(--muted);
+    aspect-ratio: 5 / 7; border-radius: 10px; border: 3px solid var(--c);
+    background: var(--card); padding: 0; position: relative; opacity: .5;
+    transition: opacity .15s, background .15s, transform .1s;
+  }
+  .deck::after {
+    content: ""; position: absolute; left: 50%; top: 50%; width: 28%; aspect-ratio: 1;
+    border-radius: 50%; background: var(--c); transform: translate(-50%, -50%); transition: background .15s;
+  }
+  .deck[aria-pressed="true"] { opacity: 1; background: var(--c); }
+  .deck[aria-pressed="true"]::after { background: var(--dot); }
+  .deck:active { transform: scale(.94); }
+  .deck:focus-visible, .drop:focus-visible, .again:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+
+  /* upload */
+  .drop {
+    width: 100%; aspect-ratio: 4 / 3; border-radius: 18px; border: 2px dashed var(--line);
+    background: var(--card); display: grid; place-items: center; transition: border-color .15s, background .15s;
+  }
+  .drop:hover, body.dragging .drop { border-color: var(--muted); background: var(--card-hover); }
+  .drop svg { width: 56px; height: 56px; stroke: var(--muted); }
+
+  /* progress */
+  .progress { padding: 34% 0; display: flex; flex-direction: column; gap: 14px; align-items: center; }
+  .track { width: 100%; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .bar { height: 100%; width: 100%; background: var(--text); border-radius: 3px;
+    transform: scaleX(0); transform-origin: left; transition: transform .35s ease-out; }
+  .stage { color: var(--muted); font-size: 15px; min-height: 1.3em; }
+
+  /* result */
+  .scores { display: flex; gap: 10px; }
+  .score {
+    --c: var(--muted);
+    flex: 1; min-width: 0; border-radius: 14px; border: 3px solid var(--c); background: var(--card);
+    padding: 14px 4px 10px; text-align: center;
+  }
+  .score b { display: block; font-size: clamp(34px, 11vw, 60px); line-height: 1; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .score span { display: block; margin-top: 6px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--c); }
+  .score.win { background: var(--c); color: var(--on-ink); }
+  .score.win span { color: var(--on-ink); }
+  canvas { width: 100%; height: auto; display: block; border-radius: 14px; background: var(--card); }
+  .again {
+    align-self: center; width: 52px; height: 52px; border-radius: 50%; border: 2px solid var(--line);
+    background: var(--card); display: grid; place-items: center;
+  }
+  .again svg { width: 24px; height: 24px; stroke: var(--text); }
+  .note { text-align: center; color: var(--muted); font-size: 14px; margin: 0; }
+  @media (prefers-reduced-motion: reduce) { .deck, .drop, .bar { transition: none; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="decks" id="decks" role="group" aria-label="Decks in play"></div>
+
+  <button class="drop" id="drop" aria-label="Upload photo">
+    <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/>
+    </svg>
+  </button>
+
+  <div class="progress" id="progress" hidden>
+    <div class="track"><div class="bar" id="bar"></div></div>
+    <div class="stage" id="stage" role="status" aria-live="polite"></div>
+  </div>
+
+  <section id="result" hidden style="display:flex;flex-direction:column;gap:18px">
+    <div class="scores" id="scores"></div>
+    <canvas id="view"></canvas>
+    <button class="again" id="again" aria-label="New photo">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/>
+      </svg>
+    </button>
+  </section>
+
+  <p class="note" id="note" hidden></p>
+  <input type="file" id="file" accept="image/*" hidden>
+</main>
+
+<script src="scorer.js"></script>
+<script>
+(() => {
+  const ORDER = ['blue', 'green', 'orange', 'pink', 'purple', 'red'];
+  const MAX_SIDE = 2600;   // analysis resolution: dots stay ~12px wide on a phone photo
+  const STAGE_MS = 320;    // keep each stage on screen long enough to read
+  const HEIC_LIB = 'https://cdn.jsdelivr.net/npm/heic-to@1.6.6/dist/csp/heic-to.js';
+  const $ = id => document.getElementById(id);
+  const el = { decks: $('decks'), drop: $('drop'), progress: $('progress'), bar: $('bar'), stage: $('stage'),
+    result: $('result'), scores: $('scores'), view: $('view'), again: $('again'), note: $('note'), file: $('file') };
+
+  let picked = new Set();
+  try { picked = new Set(JSON.parse(localStorage.getItem('tacta.decks') || '[]').filter(d => ORDER.includes(d))); } catch {}
+  let photo = null;   // ImageData of the current photo at analysis resolution
+  let job = 0;
+
+  // ── deck picker ──
+  for (const name of ORDER) {
+    const b = document.createElement('button');
+    b.className = 'deck';
+    b.style.setProperty('--c', `var(--${name})`);
+    b.setAttribute('aria-label', name);
+    b.setAttribute('aria-pressed', picked.has(name));
+    b.onclick = () => {
+      picked.has(name) ? picked.delete(name) : picked.add(name);
+      b.setAttribute('aria-pressed', picked.has(name));
+      try { localStorage.setItem('tacta.decks', JSON.stringify([...picked])); } catch {}
+      if (photo && !el.result.hidden) show(score(photo));
+    };
+    el.decks.append(b);
+  }
+  // No deck picked means "whichever decks show up".
+  const decks = () => (picked.size ? ORDER.filter(d => picked.has(d)) : ORDER);
+
+  // ── photo input ──
+  el.drop.onclick = el.again.onclick = () => el.file.click();
+  el.file.onchange = () => { if (el.file.files[0]) analyse(el.file.files[0]); el.file.value = ''; };
+  addEventListener('dragover', e => { e.preventDefault(); document.body.classList.add('dragging'); });
+  addEventListener('dragleave', () => document.body.classList.remove('dragging'));
+  addEventListener('drop', e => {
+    e.preventDefault(); document.body.classList.remove('dragging');
+    const f = e.dataTransfer.files[0]; if (f) analyse(f);
+  });
+  addEventListener('paste', e => { const f = e.clipboardData && e.clipboardData.files[0]; if (f) analyse(f); });
+
+  function viaImg(blob) {
+    return new Promise((ok, fail) => {
+      const url = URL.createObjectURL(blob), img = new Image();
+      img.onload = () => { URL.revokeObjectURL(url); ok(img); };
+      img.onerror = () => { URL.revokeObjectURL(url); fail(new Error('undecodable image')); };
+      img.src = url;
+    });
+  }
+
+  async function decode(file) {
+    try { return await createImageBitmap(file); } catch {}
+    try { return await viaImg(file); } catch {}
+    // Browsers other than Safari can't open iPhone HEIC photos natively.
+    el.stage.textContent = 'Converting photo';
+    const { heicTo } = await import(HEIC_LIB);
+    return createImageBitmap(await heicTo({ blob: file, type: 'image/jpeg', quality: 0.92 }));
+  }
+
+  function toImageData(bmp) {
+    const w = bmp.naturalWidth || bmp.width, h = bmp.naturalHeight || bmp.height;
+    const k = Math.min(1, MAX_SIDE / Math.max(w, h));
+    const c = document.createElement('canvas');
+    c.width = Math.round(w * k); c.height = Math.round(h * k);
+    const g = c.getContext('2d', { willReadFrequently: true });
+    g.imageSmoothingQuality = 'high';
+    g.drawImage(bmp, 0, 0, c.width, c.height);
+    return g.getImageData(0, 0, c.width, c.height);
+  }
+
+  const painted = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  function score(img) {
+    const run = TactaScorer.create(img, decks());
+    for (const s of run.steps) s.run();
+    return run.result;
+  }
+
+  async function analyse(file) {
+    const me = ++job;
+    el.drop.hidden = el.result.hidden = el.note.hidden = true;
+    el.progress.hidden = false;
+    el.bar.style.transition = 'none'; el.bar.style.transform = 'scaleX(0)';
+    el.stage.textContent = '';
+    await painted();
+    el.bar.style.transition = '';
+
+    let run = null;
+    const stages = [
+      { label: 'Loading photo', run: async () => { photo = toImageData(await decode(file)); run = TactaScorer.create(photo, decks()); } },
+      ...[0, 1, 2, 3].map(i => ({ get label() { return run.steps[i].label; }, run: () => run.steps[i].run() })),
+    ];
+    try {
+      for (let i = 0; i < stages.length; i++) {
+        el.stage.textContent = stages[i].label;
+        el.bar.style.transform = `scaleX(${(i + 0.6) / stages.length})`;
+        const t = performance.now();
+        await painted();
+        await stages[i].run();
+        if (me !== job) return;
+        await sleep(Math.max(0, STAGE_MS - (performance.now() - t)));
+        if (me !== job) return;
+      }
+      el.bar.style.transform = 'scaleX(1)';
+      await sleep(220);
+      if (me !== job) return;
+      show(run.result);
+    } catch (err) {
+      if (me !== job) return;
+      console.error(err);
+      photo = null;
+      el.progress.hidden = true; el.drop.hidden = false;
+      note("Couldn't read that photo");
+    }
+  }
+
+  function note(text) { el.note.textContent = text; el.note.hidden = !text; }
+
+  function show(res) {
+    el.progress.hidden = el.drop.hidden = true;
+    el.result.hidden = false;
+
+    const rows = Object.entries(res.scores)
+      .filter(([, n]) => picked.size || n > 0)
+      .sort((a, b) => b[1] - a[1]);
+    const top = rows.length ? rows[0][1] : 0;
+    el.scores.replaceChildren(...rows.map(([name, n]) => {
+      const d = document.createElement('div');
+      d.className = 'score' + (n === top && top > 0 ? ' win' : '');
+      d.style.setProperty('--c', `var(--${name})`);
+      const b = document.createElement('b'); b.textContent = n;
+      const s = document.createElement('span'); s.textContent = name;
+      d.append(b, s);
+      return d;
+    }));
+
+    const c = el.view, g = c.getContext('2d');
+    c.width = photo.width; c.height = photo.height;
+    g.putImageData(photo, 0, 0);
+    for (const pass of [{ w: 2.4, s: 'rgba(0,0,0,.75)' }, { w: 1, s: '#fff' }]) {
+      g.strokeStyle = pass.s;
+      for (const d of res.dots) {
+        g.lineWidth = Math.max(2, d.r * 0.34) * pass.w;
+        g.beginPath(); g.arc(d.x, d.y, d.r * 2 + 1, 0, Math.PI * 2); g.stroke();
+      }
+    }
+
+    if (!res.dots.length) note('No dots found');
+    else if (res.dotRadius < 3.4) note('Photo too small to count reliably');
+    else note('');
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+# Only the app itself is published. The example photos show people and the
+# rulebook is copyrighted, so neither belongs in a public repository.
+example game pictures/
+TACTA_RULES.pdf
+.DS_Store
+.claude/
