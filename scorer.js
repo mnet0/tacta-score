@@ -15,15 +15,15 @@
 
   // Typical printed hue (degrees) of each deck's ink.
   const DECKS = {
-    red: { hue: 2, css: '#e23b3b' },
-    orange: { hue: 35, css: '#f29a1f' },
-    green: { hue: 85, css: '#7fb53a' },
-    blue: { hue: 218, css: '#5f8fdc' },
-    purple: { hue: 264, css: '#8463c9' },
-    pink: { hue: 330, css: '#e74c9b' },
+    red: { hue: 2, css: '#e5504c' },
+    orange: { hue: 36, css: '#f29a1f' },
+    green: { hue: 78, css: '#9cc23e' },
+    blue: { hue: 216, css: '#6f97d8' },
+    purple: { hue: 285, css: '#9a6fb0' },
+    pink: { hue: 339, css: '#f0598c' },
   };
 
-  const INK = 1, BLACK = 2; // pixel kinds; 0 = unsaturated and not dark
+  const INK = 1; // pixel kind: clearly saturated, so never part of a white dot
 
   function hueOf(r, g, b) {
     const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
@@ -48,7 +48,7 @@
     const run = { steps: [], result: null, debug: st };
     let kind, low, levels;
 
-    // ── 1. per pixel: is it saturated ink, card black, or neither ──
+    // ── 1. per pixel: how white is it, and is it clearly saturated ink ──
     function readColours() {
       kind = new Uint8Array(N);
       low = new Uint8Array(N); // min(r,g,b): high only where a pixel is white
@@ -68,15 +68,15 @@
         acc += hist[v];
         if (acc > total * 0.1) { ref = v; break; }
       }
-      const tBlack = Math.max(50, Math.min(100, ref * 0.38));
-      levels = [Math.max(100, ref * 0.68), Math.max(70, ref * 0.44)];
+      // Several white thresholds: pale inks (washed-out blue or purple) only
+      // separate from the dots at the high one, shaded dots only at the low one.
+      levels = [Math.max(120, ref * 0.86), Math.max(100, ref * 0.68), Math.max(70, ref * 0.46)];
       st.whiteRef = ref; st.levels = levels;
       for (let i = 0, p = 0; i < N; i++, p += 4) {
         const r = data[p], g = data[p + 1], b = data[p + 2];
         const mx = r > g ? (r > b ? r : b) : g > b ? g : b;
         const d = mx - low[i];
-        if (mx < tBlack) kind[i] = BLACK;
-        else if (d * 100 >= mx * 24) kind[i] = INK;
+        if (d * 100 >= mx * 24 && mx >= 50) kind[i] = INK;
       }
     }
 
@@ -121,65 +121,87 @@
     }
 
     // ── 3. keep blobs that sit in ink, inside an outlined edge shape ──
+    // Everything here is judged against the blob's own surroundings, because
+    // ink can be vivid (orange) or barely tinted (blue under glare).
     function checkDots() {
       const passed = [];
+      const hr = new Uint16Array(256), hg = new Uint16Array(256), hb = new Uint16Array(256);
+      const median = (h, n) => { let acc = 0; for (let v = 0; v < 256; v++) { acc += h[v]; if (acc * 2 >= n) return v; } return 255; };
       for (const b of st.blobs) {
         const rIn = b.r * 1.3 + 1, rOut = b.r * 2 + 1.5, R = Math.ceil(rOut);
         const xc = Math.round(b.x), yc = Math.round(b.y);
-        let n = 0, nc = 0, sr = 0, sg = 0, sb = 0, sl = 0;
+        if (xc - R < 0 || yc - R < 0 || xc + R >= W || yc + R >= H) continue;
+        // The ring just outside the blob: its median colour is the ink.
+        hr.fill(0); hg.fill(0); hb.fill(0);
+        let n = 0;
         for (let dy = -R; dy <= R; dy++) {
-          const y = yc + dy;
-          if (y < 0 || y >= H) { n += 2 * R + 1; continue; }
           for (let dx = -R; dx <= R; dx++) {
             const d2 = dx * dx + dy * dy;
             if (d2 < rIn * rIn || d2 > rOut * rOut) continue;
-            n++;
-            const x = xc + dx;
-            if (x < 0 || x >= W) continue;
-            const i = y * W + x;
-            if (kind[i] === INK) {
-              nc++; sl += low[i]; const p = i * 4;
-              sr += data[p]; sg += data[p + 1]; sb += data[p + 2];
-            }
+            const p = ((yc + dy) * W + xc + dx) * 4;
+            hr[data[p]]++; hg[data[p + 1]]++; hb[data[p + 2]]++; n++;
           }
         }
-        b.ring = n ? nc / n : 0;
+        const mr = median(hr, n), mg = median(hg, n), mb = median(hb, n);
+        const inkMax = Math.max(mr, mg, mb), inkLow = Math.min(mr, mg, mb);
+        const span = b.white - inkLow;            // contrast between dot and ink
+        b.sat = inkMax ? 1 - inkLow / inkMax : 0;
+        // Ink is tinted, not black, and clearly darker than the dot.
+        if (b.sat < 0.14 || inkMax < b.white * 0.3 || span < b.white * 0.15) continue;
+        const tol = Math.max(12, Math.min(45, span * 0.3));
+        let same = 0;
+        for (let dy = -R; dy <= R; dy++) {
+          for (let dx = -R; dx <= R; dx++) {
+            const d2 = dx * dx + dy * dy;
+            if (d2 < rIn * rIn || d2 > rOut * rOut) continue;
+            const p = ((yc + dy) * W + xc + dx) * 4;
+            if (Math.abs(data[p] - mr) <= tol && Math.abs(data[p + 1] - mg) <= tol && Math.abs(data[p + 2] - mb) <= tol) same++;
+          }
+        }
+        b.ring = same / n;                         // how much of the ring is that one ink
         if (b.ring < 0.8) continue;
-        b.rgb = [sr / nc, sg / nc, sb / nc];
-        b.hue = hueOf(b.rgb[0], b.rgb[1], b.rgb[2]);
-        b.sat = 1 - Math.min(...b.rgb) / Math.max(...b.rgb);
+        b.rgb = [mr, mg, mb];
+        b.hue = hueOf(mr, mg, mb);
 
         // Walk outward in every direction: dot → ink → white outline → ?
-        // Outlines are thin and blur into the ink, so "white" here is judged
-        // against this dot's own ink and white levels.
-        const inkLow = sl / nc, span = b.white - inkLow;
+        // An edge shape's outline is followed by the card's border in the same
+        // ink; a number badge's outline is followed by black on every side.
         const tLine = inkLow + span * 0.4, tInk = inkLow + span * 0.25;
+        const tol2 = tol * 1.3, tDark = inkMax * 0.6, satMin = Math.min(0.24, b.sat * 0.5);
         const reach = b.r * 1.3 + 2; // how far past the outline ink must appear
-        const maxT = b.r * 9 + 6;
+        // The inner dot of a two-dot corner square only sees the border past
+        // its neighbour, in a narrow fan, so look far and accept a few rays.
+        const maxT = b.r * 12 + 6;
         let toInk = 0;
-        const RAYS = 32;
+        const RAYS = 48;
         for (let k = 0; k < RAYS; k++) {
           const a = (k / RAYS) * 2 * Math.PI, ux = Math.cos(a), uy = Math.sin(a);
           let phase = 0, runLen = 0, t0 = 0;
           for (let t = b.r * 0.6; t < maxT; t += 0.5) {
             const x = Math.round(b.x + ux * t), y = Math.round(b.y + uy * t);
             if (x < 0 || x >= W || y < 0 || y >= H) break;
-            const i = y * W + x, c = kind[i];
-            if (phase === 0) { if (c === INK) phase = 1; }
+            const i = y * W + x, p = i * 4;
+            const pr = data[p], pg = data[p + 1], pb = data[p + 2];
+            const ink = Math.abs(pr - mr) <= tol2 && Math.abs(pg - mg) <= tol2 && Math.abs(pb - mb) <= tol2;
+            const dark = !ink && pr < tDark && pg < tDark && pb < tDark;
+            if (phase === 0) { if (ink) phase = 1; }
             else if (phase === 1) {
-              if (c === BLACK) break;
+              if (dark) break;
               if (low[i] > tLine) { phase = 2; t0 = t; }
             } else {
-              if (c === BLACK || t - t0 > reach) break;
-              if (c === INK && low[i] < tInk) { if (++runLen >= 2) { toInk++; break; } } else runLen = 0;
+              if (dark || t - t0 > reach) break;
+              // The border is thin and blurs into its neighbours, so it only has
+              // to be tinted and well below white, not an exact colour match.
+              const mx = Math.max(pr, pg, pb);
+              if (low[i] < tInk && mx - low[i] >= mx * satMin) { if (++runLen >= 2) { toInk++; break; } } else runLen = 0;
             }
           }
         }
         b.toInk = toInk / RAYS;
-        if (b.toInk < 0.12) continue;
+        if (toInk < 3) continue;
         passed.push(b);
       }
-      // The same dot can be found at both white levels: keep the fuller one.
+      // The same dot can be found at several white levels: keep the fullest.
       passed.sort((a, b) => b.r - a.r);
       const cand = (st.cand = []);
       for (const b of passed) {
