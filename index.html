@@ -84,7 +84,7 @@
   .photo { position: relative; border-radius: 14px; overflow: hidden; background: var(--card); }
   canvas { width: 100%; height: auto; display: block; }
   #marks { position: absolute; inset: 0; height: 100%; animation: blink 2.4s ease-in-out infinite; }
-  @keyframes blink { 0%, 35% { opacity: 1; } 65%, 80% { opacity: 0; } 100% { opacity: 1; } }
+  @keyframes blink { 0%, 35% { opacity: 1; } 65%, 80% { opacity: .4; } 100% { opacity: 1; } }
   .again {
     align-self: center; width: 52px; height: 52px; border-radius: 50%; border: 2px solid var(--line);
     background: var(--card); display: grid; place-items: center;
@@ -293,7 +293,7 @@
     // Rings live on their own layer so they can blink over the photo.
     const c = el.marks, g = c.getContext('2d');
     c.width = photo.width; c.height = photo.height;
-    for (const pass of [{ w: 2.4, s: 'rgba(0,0,0,.75)' }, { w: 1, s: '#fff' }]) {
+    for (const pass of [{ w: 2.4, s: 'rgba(0,0,0,.75)' }, { w: 1, s: '#ff2a2a' }]) {
       g.strokeStyle = pass.s;
       for (const d of res.dots) {
         g.lineWidth = Math.max(2, d.r * 0.34) * pass.w;
