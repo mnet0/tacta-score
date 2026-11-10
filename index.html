@@ -63,23 +63,35 @@
 
   /* result */
   .scores { display: flex; gap: 10px; }
-  .score {
-    --c: var(--muted);
-    flex: 1; min-width: 0; border-radius: 14px; border: 3px solid var(--c); background: var(--card);
-    padding: 14px 4px 10px; text-align: center;
+  .col { --c: var(--muted); flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+  .adj { display: flex; gap: 4px; }
+  .adj button {
+    flex: 1; min-width: 0; height: 34px; padding: 0; border-radius: 9px; border: 2px solid var(--line);
+    background: var(--card); color: var(--c); font-size: 20px; font-weight: 700; line-height: 1;
   }
+  .adj button:active { background: var(--card-hover); }
+  .adj button:disabled { opacity: .3; cursor: default; }
+  .adj button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+  .score {
+    border-radius: 14px; border: 3px solid var(--c); background: var(--card);
+    padding: 14px 4px 10px; text-align: center; position: relative;
+  }
+  .score i { position: absolute; top: 5px; right: 7px; font-style: normal; font-size: 11px; font-weight: 700; opacity: .75; }
   .score b { display: block; font-size: clamp(34px, 11vw, 60px); line-height: 1; font-weight: 800; font-variant-numeric: tabular-nums; }
-  .score span { display: block; margin-top: 6px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--c); }
+  .score span { display: block; margin-top: 6px; font-size: clamp(8.5px, 2.4vw, 12px); letter-spacing: .03em; text-transform: uppercase; color: var(--c); }
   .score.win { background: var(--c); color: var(--on-ink); }
   .score.win span { color: var(--on-ink); }
-  canvas { width: 100%; height: auto; display: block; border-radius: 14px; background: var(--card); }
+  .photo { position: relative; border-radius: 14px; overflow: hidden; background: var(--card); }
+  canvas { width: 100%; height: auto; display: block; }
+  #marks { position: absolute; inset: 0; height: 100%; animation: blink 2.4s ease-in-out infinite; }
+  @keyframes blink { 0%, 35% { opacity: 1; } 65%, 80% { opacity: 0; } 100% { opacity: 1; } }
   .again {
     align-self: center; width: 52px; height: 52px; border-radius: 50%; border: 2px solid var(--line);
     background: var(--card); display: grid; place-items: center;
   }
   .again svg { width: 24px; height: 24px; stroke: var(--text); }
   .note { text-align: center; color: var(--muted); font-size: 14px; margin: 0; }
-  @media (prefers-reduced-motion: reduce) { .deck, .drop, .bar { transition: none; } }
+  @media (prefers-reduced-motion: reduce) { .deck, .drop, .bar { transition: none; } #marks { animation: none; } }
 </style>
 </head>
 <body>
@@ -99,7 +111,7 @@
 
   <section id="result" hidden style="display:flex;flex-direction:column;gap:18px">
     <div class="scores" id="scores"></div>
-    <canvas id="view"></canvas>
+    <div class="photo"><canvas id="view"></canvas><canvas id="marks"></canvas></div>
     <button class="again" id="again" aria-label="New photo">
       <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/>
@@ -120,12 +132,14 @@
   const HEIC_LIB = 'https://cdn.jsdelivr.net/npm/heic-to@1.6.6/dist/csp/heic-to.js';
   const $ = id => document.getElementById(id);
   const el = { decks: $('decks'), drop: $('drop'), progress: $('progress'), bar: $('bar'), stage: $('stage'),
-    result: $('result'), scores: $('scores'), view: $('view'), again: $('again'), note: $('note'), file: $('file') };
+    result: $('result'), scores: $('scores'), view: $('view'), marks: $('marks'), again: $('again'), note: $('note'), file: $('file') };
 
   let picked = new Set();
   try { picked = new Set(JSON.parse(localStorage.getItem('tacta.decks') || '[]').filter(d => ORDER.includes(d))); } catch {}
   let photo = null;   // ImageData of the current photo at analysis resolution
   let job = 0;
+  let last = null;    // latest scorer result for the current photo
+  let extra = {};     // points added or removed by hand, per deck
 
   // ── deck picker ──
   for (const name of ORDER) {
@@ -138,7 +152,7 @@
       picked.has(name) ? picked.delete(name) : picked.add(name);
       b.setAttribute('aria-pressed', picked.has(name));
       try { localStorage.setItem('tacta.decks', JSON.stringify([...picked])); } catch {}
-      if (photo && !el.result.hidden) show(score(photo));
+      if (photo && !el.result.hidden) show(score(photo), true);
     };
     el.decks.append(b);
   }
@@ -222,6 +236,7 @@
       el.bar.style.transform = 'scaleX(1)';
       await sleep(220);
       if (me !== job) return;
+      extra = {};
       show(run.result);
     } catch (err) {
       if (me !== job) return;
@@ -234,27 +249,50 @@
 
   function note(text) { el.note.textContent = text; el.note.hidden = !text; }
 
-  function show(res) {
-    el.progress.hidden = el.drop.hidden = true;
-    el.result.hidden = false;
-
-    const rows = Object.entries(res.scores)
-      .filter(([, n]) => picked.size || n > 0)
+  // Scores = dots found in the photo plus any hand corrections.
+  function tally() {
+    const rows = Object.entries(last.scores)
+      .map(([name, n]) => [name, Math.max(0, n + (extra[name] || 0)), n])
+      .filter(([name, n, found]) => picked.size || found > 0 || extra[name])
       .sort((a, b) => b[1] - a[1]);
     const top = rows.length ? rows[0][1] : 0;
-    el.scores.replaceChildren(...rows.map(([name, n]) => {
+    el.scores.replaceChildren(...rows.map(([name, n, found]) => {
+      const col = document.createElement('div');
+      col.className = 'col';
+      col.style.setProperty('--c', `var(--${name})`);
       const d = document.createElement('div');
       d.className = 'score' + (n === top && top > 0 ? ' win' : '');
-      d.style.setProperty('--c', `var(--${name})`);
       const b = document.createElement('b'); b.textContent = n;
       const s = document.createElement('span'); s.textContent = name;
       d.append(b, s);
-      return d;
+      if (n !== found) { const i = document.createElement('i'); i.textContent = (n > found ? '+' : '\u2212') + Math.abs(n - found); d.append(i); }
+      const adj = document.createElement('div');
+      adj.className = 'adj';
+      for (const [step, sign, label] of [[-1, '\u2212', 'Remove a point from '], [1, '+', 'Add a point to ']]) {
+        const k = document.createElement('button');
+        k.textContent = sign; k.setAttribute('aria-label', label + name);
+        k.disabled = step < 0 && n === 0;
+        k.onclick = () => { extra[name] = (extra[name] || 0) + step; tally(); };
+        adj.append(k);
+      }
+      col.append(d, adj);
+      return col;
     }));
+  }
 
-    const c = el.view, g = c.getContext('2d');
+  function show(res, keepPhoto) {
+    el.progress.hidden = el.drop.hidden = true;
+    el.result.hidden = false;
+    last = res;
+    tally();
+
+    if (!keepPhoto) {
+      el.view.width = photo.width; el.view.height = photo.height;
+      el.view.getContext('2d').putImageData(photo, 0, 0);
+    }
+    // Rings live on their own layer so they can blink over the photo.
+    const c = el.marks, g = c.getContext('2d');
     c.width = photo.width; c.height = photo.height;
-    g.putImageData(photo, 0, 0);
     for (const pass of [{ w: 2.4, s: 'rgba(0,0,0,.75)' }, { w: 1, s: '#fff' }]) {
       g.strokeStyle = pass.s;
       for (const d of res.dots) {
